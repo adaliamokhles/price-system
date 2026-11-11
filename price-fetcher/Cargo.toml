@@ -1,0 +1,9 @@
+[package]
+name = "price-fetcher"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+serde_json = "1.0.154"
+socketcan = "3"
+ureq = "2"
