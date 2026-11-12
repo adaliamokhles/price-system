@@ -1,86 +1,321 @@
 <!doctype html>
-<html>
+<html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Crypto prices from the CAN bus</title>
-<!-- Chart.js: the charting library, downloaded by the browser from the internet -->
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TLB Infinitum Crypto Monitor</title>
+<!-- Fonts and Chart.js are downloaded by the browser from the internet -->
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;600&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.js"></script>
 <style>
-  body  { font-family: Arial, sans-serif; background: #111; color: #eee; margin: 16px; }
-  h1    { font-size: 20px; margin: 0 0 4px; }
-  .info { color: #999; font-size: 13px; margin-bottom: 14px; }
-  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
-  .card { background: #1d1d1d; border-radius: 8px; padding: 10px 12px; }
-  .name { font-weight: bold; font-size: 16px; }
-  .price{ float: right; font-size: 16px; font-weight: bold; }
-  .box  { height: 200px; margin-top: 6px; }
+  :root {
+    --bg: #07080c; --panel: rgba(255,255,255,0.035); --border: rgba(255,255,255,0.08);
+    --text: #eef0f5; --muted: #8b90a0; --gold: #d6b25e; --up: #22c55e; --down: #ef4444;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh; color: var(--text);
+    font-family: Inter, Arial, sans-serif;
+    background:
+      radial-gradient(1200px 600px at 10% -10%, #1a1f3a 0%, transparent 60%),
+      radial-gradient(900px 500px at 110% 10%, #2a1d10 0%, transparent 55%),
+      var(--bg);
+  }
+  .wrap { max-width: 1400px; margin: 0 auto; padding: 28px 28px 40px; }
+  .mono { font-family: "JetBrains Mono", Consolas, monospace; }
+
+  /* Header */
+  header { display: flex; justify-content: space-between; align-items: flex-end; gap: 16px; flex-wrap: wrap; margin-bottom: 22px; }
+  .brand h1 { margin: 0; font-size: 26px; font-weight: 700; letter-spacing: .3px; }
+  .brand h1 span { color: var(--gold); }
+  .brand p { margin: 6px 0 0; color: var(--muted); font-size: 13px; }
+  .status { display: flex; align-items: center; gap: 14px; font-size: 13px; color: var(--muted); }
+  .live { display: flex; align-items: center; gap: 8px; padding: 6px 12px; border: 1px solid var(--border);
+          border-radius: 999px; background: var(--panel); color: var(--text); font-weight: 600; font-size: 12px; letter-spacing: 1px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--up); animation: pulse 1.8s infinite; }
+  .live.off .dot { background: var(--down); animation: none; }
+  @keyframes pulse {
+    0%   { box-shadow: 0 0 0 0 rgba(34,197,94,.6); }
+    70%  { box-shadow: 0 0 0 10px rgba(34,197,94,0); }
+    100% { box-shadow: 0 0 0 0 rgba(34,197,94,0); }
+  }
+
+  /* Ticker + time window buttons */
+  .toolbar { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 18px; }
+  .ticker { display: flex; gap: 10px; flex-wrap: wrap; }
+  .chip { padding: 8px 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--panel);
+          font-size: 12px; display: flex; gap: 8px; align-items: center; }
+  .chip b { font-weight: 600; }
+  .range { display: flex; background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 3px; }
+  .range button { background: none; border: 0; color: var(--muted); font: 600 12px Inter, Arial, sans-serif;
+                  padding: 7px 14px; border-radius: 8px; cursor: pointer; }
+  .range button.active { background: var(--gold); color: #111; }
+
+  /* Cards */
+  .grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+  @media (max-width: 1100px) { .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  @media (max-width: 700px)  { .grid { grid-template-columns: 1fr; } }
+  .card { border: 1px solid var(--border); border-radius: 16px; padding: 16px 16px 12px; cursor: pointer;
+          background: linear-gradient(180deg, rgba(255,255,255,.05), rgba(255,255,255,.015));
+          transition: transform .2s, border-color .2s, box-shadow .2s; }
+  .card:hover { transform: translateY(-2px); border-color: rgba(214,178,94,.45); box-shadow: 0 10px 30px rgba(0,0,0,.35); }
+  .top { display: flex; align-items: center; gap: 10px; }
+  .badge { width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center; font-weight: 700; font-size: 13px; color: #111; }
+  .title { flex: 1; }
+  .title .n { font-weight: 600; font-size: 15px; }
+  .title .s { color: var(--muted); font-size: 11px; }
+  .canid { font-size: 11px; color: var(--gold); border: 1px solid rgba(214,178,94,.35); padding: 3px 8px; border-radius: 6px; }
+  .priceRow { display: flex; align-items: baseline; justify-content: space-between; margin: 12px 0 4px; }
+  .price { font-size: 24px; font-weight: 600; transition: color .4s; }
+  .price.flashUp { color: var(--up); }
+  .price.flashDown { color: var(--down); }
+  .chg { font-size: 12px; font-weight: 600; padding: 4px 8px; border-radius: 999px; }
+  .chg.up   { color: var(--up);   background: rgba(34,197,94,.12); }
+  .chg.down { color: var(--down); background: rgba(239,68,68,.12); }
+  .chg.flat { color: var(--muted); background: rgba(255,255,255,.06); }
+  .box { height: 170px; margin: 6px -4px 8px; }
+  .stats { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); border-top: 1px solid var(--border); padding-top: 9px; }
+  .stats b { color: var(--text); font-weight: 500; }
+
+  /* Big view (click a card) */
+  .overlay { position: fixed; inset: 0; background: rgba(3,4,8,.78); display: none; align-items: center; justify-content: center; padding: 24px; z-index: 10; }
+  .overlay.open { display: flex; }
+  .modal { width: min(1100px, 100%); border: 1px solid var(--border); border-radius: 18px; background: #0d0f16; padding: 20px; }
+  .modal .price { font-size: 30px; }
+  .close { background: none; border: 1px solid var(--border); color: var(--text); border-radius: 8px; padding: 6px 12px; cursor: pointer; font: 600 12px Inter, Arial, sans-serif; }
+  .bigbox { height: 420px; margin-top: 12px; }
+  footer { margin-top: 22px; color: var(--muted); font-size: 12px; text-align: center; }
 </style>
 </head>
 <body>
-<h1>Live crypto prices, received over the CAN bus (vcan0)</h1>
-<div class="info" id="status">waiting for data...</div>
-<div class="grid" id="grid"></div>
+<div class="wrap">
+  <header>
+    <div class="brand">
+      <h1>TLB <span>Infinitum</span> Crypto Monitor</h1>
+      <p>Live crypto prices fetched from the internet, sent over the CAN bus <span class="mono">vcan0</span>, drawn here.</p>
+    </div>
+    <div class="status">
+      <span id="updated">connecting…</span>
+      <div class="live" id="live"><div class="dot"></div><span id="liveText">LIVE</span></div>
+    </div>
+  </header>
+
+  <div class="toolbar">
+    <div class="ticker" id="ticker"></div>
+    <div class="range" id="range">
+      <button data-min="5">5 min</button>
+      <button data-min="15" class="active">15 min</button>
+      <button data-min="0">All</button>
+    </div>
+  </div>
+
+  <div class="grid" id="grid"></div>
+  <footer>Data path: Coinbase API → price-fetcher → CAN (IDs 0x100–0x105) → price-web → this page · refreshes every 2 s</footer>
+</div>
+
+<div class="overlay" id="overlay">
+  <div class="modal">
+    <div class="top">
+      <div class="badge" id="mBadge"></div>
+      <div class="title"><div class="n" id="mName"></div><div class="s" id="mSub"></div></div>
+      <button class="close" id="mClose">Close ✕</button>
+    </div>
+    <div class="priceRow"><div class="price mono" id="mPrice">–</div><div class="chg flat mono" id="mChg">–</div></div>
+    <div class="bigbox"><canvas id="mCanvas"></canvas></div>
+    <div class="stats" id="mStats"></div>
+  </div>
+</div>
 
 <script>
-// One color per coin
-const COLORS = ["#f7931a", "#8c8cff", "#14f195", "#25a2e0", "#3cc8c8", "#c2a633"];
+const COLORS = ["#f7931a", "#8c8cff", "#14f195", "#25a2e0", "#3cc8c8", "#d6b25e"];
 const charts = [];
+let windowMin = 15;   // selected time window in minutes (0 = all)
+let lastData = null;  // latest answer from /data
+let lastPrice = [];   // last shown price per coin (for the flash effect)
+let focused = -1;     // coin shown in the big view (-1 = none)
+let bigChart = null;
 
-// Create the 6 cards with an empty chart in each
-function setup(names) {
-  const grid = document.getElementById("grid");
-  names.forEach(function (name, i) {
-    const card = document.createElement("div");
-    card.className = "card";
-    card.innerHTML =
-      '<span class="name">' + name + '</span>' +
-      '<span class="price" id="p' + i + '">...</span>' +
-      '<div class="box"><canvas id="c' + i + '"></canvas></div>';
-    grid.appendChild(card);
+// Price with sensible decimals: 73,912.45 / 2,054.31 / 1.0532 / 0.06821
+function fmt(p) {
+  const d = p >= 1000 ? 2 : p >= 1 ? 4 : 5;
+  return p.toLocaleString("en-US", { minimumFractionDigits: d, maximumFractionDigits: d });
+}
 
-    charts.push(new Chart(document.getElementById("c" + i), {
-      type: "line",
-      data: { labels: [], datasets: [{ data: [], borderColor: COLORS[i],
-              borderWidth: 2, pointRadius: 0, tension: 0.2 }] },
-      options: {
-        animation: { duration: 500 },
-        maintainAspectRatio: false,
-        plugins: { legend: { display: false } },
-        scales: {
-          x: { ticks: { color: "#999", maxTicksLimit: 5 }, grid: { color: "#2a2a2a" } },
-          y: { ticks: { color: "#999" }, grid: { color: "#2a2a2a" } }
-        }
+// Keep only the points inside the selected time window
+function visible(points) {
+  if (!points.length || windowMin === 0) return points;
+  const end = points[points.length - 1][0];
+  return points.filter(function (p) { return p[0] >= end - windowMin * 60; });
+}
+
+// Soft gradient under the line, in the coin's color
+function gradient(color) {
+  return function (ctx) {
+    const area = ctx.chart.chartArea;
+    if (!area) return "transparent";
+    const g = ctx.chart.ctx.createLinearGradient(0, area.top, 0, area.bottom);
+    g.addColorStop(0, color + "55");
+    g.addColorStop(1, color + "00");
+    return g;
+  };
+}
+
+// One line chart (small card or big view)
+function makeChart(canvas, color, big) {
+  return new Chart(canvas, {
+    type: "line",
+    data: { labels: [], datasets: [{ data: [], borderColor: color, borderWidth: big ? 2.5 : 2,
+            pointRadius: 0, pointHoverRadius: 4, tension: 0.3, fill: true, backgroundColor: gradient(color) }] },
+    options: {
+      animation: { duration: 500 },
+      maintainAspectRatio: false,
+      interaction: { mode: "index", intersect: false },
+      plugins: {
+        legend: { display: false },
+        tooltip: { backgroundColor: "#11131c", borderColor: "#2a2d3a", borderWidth: 1, displayColors: false,
+                   callbacks: { label: function (c) { return fmt(c.parsed.y) + " USD"; } } }
+      },
+      scales: {
+        x: { grid: { display: false }, ticks: { color: "#6b7080", maxTicksLimit: big ? 8 : 4, maxRotation: 0 } },
+        y: { position: "right", grid: { color: "rgba(255,255,255,0.05)" },
+             ticks: { color: "#6b7080", maxTicksLimit: big ? 8 : 5, callback: function (v) { return fmt(v); } } }
       }
-    }));
+    }
   });
 }
 
-// Ask the device for the latest history, then redraw every chart
+// Build the 6 cards and the ticker chips (first time only)
+function setup(coins) {
+  const grid = document.getElementById("grid");
+  const ticker = document.getElementById("ticker");
+  coins.forEach(function (c, i) {
+    const card = document.createElement("div");
+    card.className = "card";
+    card.innerHTML =
+      '<div class="top">' +
+        '<div class="badge" style="background:' + COLORS[i] + '">' + c.name[0] + '</div>' +
+        '<div class="title"><div class="n">' + c.name + '</div><div class="s">' + c.name + ' / USD</div></div>' +
+        '<div class="canid mono">CAN 0x' + (0x100 + i).toString(16).toUpperCase() + '</div>' +
+      '</div>' +
+      '<div class="priceRow"><div class="price mono" id="p' + i + '">–</div><div class="chg flat mono" id="d' + i + '">–</div></div>' +
+      '<div class="box"><canvas id="c' + i + '"></canvas></div>' +
+      '<div class="stats" id="s' + i + '"></div>';
+    card.addEventListener("click", function () { openFocus(i); });
+    grid.appendChild(card);
+    charts.push(makeChart(document.getElementById("c" + i), COLORS[i], false));
+
+    const chip = document.createElement("div");
+    chip.className = "chip";
+    chip.innerHTML = '<b>' + c.name + '</b><span class="mono" id="t' + i + '">–</span>';
+    ticker.appendChild(chip);
+  });
+}
+
+// Fill one chart and its texts (price, % change, high/low) with the visible points
+function render(coin, chart, ids) {
+  const pts = visible(coin.points);
+  chart.data.labels = pts.map(function (p) {
+    return new Date(p[0] * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  });
+  chart.data.datasets[0].data = pts.map(function (p) { return p[1]; });
+  chart.update();
+  if (!pts.length) return null;
+
+  const prices = pts.map(function (p) { return p[1]; });
+  const first = prices[0], last = prices[prices.length - 1];
+  const hi = Math.max.apply(null, prices), lo = Math.min.apply(null, prices);
+  const pct = first ? (last - first) / first * 100 : 0;
+  const cls = pct > 0.0001 ? "up" : pct < -0.0001 ? "down" : "flat";
+  const arrow = cls === "up" ? "▲ " : cls === "down" ? "▼ " : "";
+
+  document.getElementById(ids.price).textContent = fmt(last);
+  const chg = document.getElementById(ids.chg);
+  chg.className = "chg mono " + cls;
+  chg.textContent = arrow + (pct >= 0 ? "+" : "") + pct.toFixed(3) + " %";
+  document.getElementById(ids.stats).innerHTML =
+    '<span>High <b class="mono">' + fmt(hi) + '</b></span>' +
+    '<span>Low <b class="mono">' + fmt(lo) + '</b></span>' +
+    '<span>Points <b class="mono">' + pts.length + '</b></span>';
+  return { last: last, cls: cls };
+}
+
+// Short green/red flash on the price when it changes
+function flash(i, last) {
+  const el = document.getElementById("p" + i);
+  if (lastPrice[i] !== undefined && last !== lastPrice[i]) {
+    el.classList.remove("flashUp", "flashDown");
+    el.classList.add(last > lastPrice[i] ? "flashUp" : "flashDown");
+    setTimeout(function () { el.classList.remove("flashUp", "flashDown"); }, 900);
+  }
+  lastPrice[i] = last;
+}
+
+// Big view of one coin
+function openFocus(i) {
+  focused = i;
+  const c = lastData.coins[i];
+  document.getElementById("overlay").classList.add("open");
+  document.getElementById("mBadge").style.background = COLORS[i];
+  document.getElementById("mBadge").textContent = c.name[0];
+  document.getElementById("mName").textContent = c.name + " / USD";
+  document.getElementById("mSub").textContent = "CAN ID 0x" + (0x100 + i).toString(16).toUpperCase() + " · click outside or Close to go back";
+  if (bigChart) bigChart.destroy();
+  bigChart = makeChart(document.getElementById("mCanvas"), COLORS[i], true);
+  render(c, bigChart, { price: "mPrice", chg: "mChg", stats: "mStats" });
+}
+function closeFocus() {
+  focused = -1;
+  document.getElementById("overlay").classList.remove("open");
+}
+document.getElementById("mClose").addEventListener("click", closeFocus);
+document.getElementById("overlay").addEventListener("click", function (e) {
+  if (e.target.id === "overlay") closeFocus();
+});
+
+// Time window buttons (5 min / 15 min / All)
+document.querySelectorAll("#range button").forEach(function (b) {
+  b.addEventListener("click", function () {
+    document.querySelectorAll("#range button").forEach(function (x) { x.classList.remove("active"); });
+    b.classList.add("active");
+    windowMin = parseInt(b.dataset.min, 10);
+    if (lastData) draw(lastData);
+  });
+});
+
+// Draw everything from one /data answer
+function draw(d) {
+  d.coins.forEach(function (c, i) {
+    const r = render(c, charts[i], { price: "p" + i, chg: "d" + i, stats: "s" + i });
+    const t = document.getElementById("t" + i);
+    if (r) {
+      flash(i, r.last);
+      t.style.color = r.cls === "up" ? "var(--up)" : r.cls === "down" ? "var(--down)" : "var(--muted)";
+      t.textContent = fmt(r.last);
+    } else {
+      t.textContent = "waiting…";
+    }
+  });
+  if (focused >= 0) render(d.coins[focused], bigChart, { price: "mPrice", chg: "mChg", stats: "mStats" });
+}
+
+// Ask the device for new data every 2 seconds
 async function refresh() {
+  const live = document.getElementById("live");
   try {
     const res = await fetch("/data");
     const d = await res.json();
-    if (charts.length === 0) setup(d.coins.map(function (c) { return c.name; }));
-
-    d.coins.forEach(function (c, i) {
-      const chart = charts[i];
-      chart.data.labels = c.points.map(function (p) {
-        return new Date(p[0] * 1000).toLocaleTimeString();
-      });
-      chart.data.datasets[0].data = c.points.map(function (p) { return p[1]; });
-      chart.update();
-
-      const last = c.points.length ? c.points[c.points.length - 1][1] : null;
-      document.getElementById("p" + i).textContent =
-        last === null ? "waiting..." : last.toFixed(4) + " USD";
-    });
-    document.getElementById("status").textContent =
-      "updated " + new Date().toLocaleTimeString() + " (refreshes every 2 s)";
+    if (!charts.length) setup(d.coins);
+    lastData = d;
+    draw(d);
+    live.classList.remove("off");
+    document.getElementById("liveText").textContent = "LIVE";
+    document.getElementById("updated").textContent = "updated " + new Date().toLocaleTimeString();
   } catch (e) {
-    document.getElementById("status").textContent = "connection to the device lost...";
+    live.classList.add("off");
+    document.getElementById("liveText").textContent = "OFFLINE";
+    document.getElementById("updated").textContent = "connection to the device lost…";
   }
 }
-
 refresh();
 setInterval(refresh, 2000);
 </script>
