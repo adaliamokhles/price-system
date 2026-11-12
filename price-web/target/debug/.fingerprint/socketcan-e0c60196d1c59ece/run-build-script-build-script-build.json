@@ -1,0 +1,1 @@
+{"rustc":11835527281324007204,"features":"","declared_features":"","target":0,"profile":0,"path":0,"deps":[[4480345564365273877,"build_script_build",false,6167388383335132071]],"local":[{"RerunIfChanged":{"output":"debug/build/socketcan-e0c60196d1c59ece/output","paths":["build.rs"]}}],"rustflags":[],"config":0,"compile_kind":0}

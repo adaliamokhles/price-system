@@ -1,0 +1,88 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Crypto prices from the CAN bus</title>
+<!-- Chart.js: the charting library, downloaded by the browser from the internet -->
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.js"></script>
+<style>
+  body  { font-family: Arial, sans-serif; background: #111; color: #eee; margin: 16px; }
+  h1    { font-size: 20px; margin: 0 0 4px; }
+  .info { color: #999; font-size: 13px; margin-bottom: 14px; }
+  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+  .card { background: #1d1d1d; border-radius: 8px; padding: 10px 12px; }
+  .name { font-weight: bold; font-size: 16px; }
+  .price{ float: right; font-size: 16px; font-weight: bold; }
+  .box  { height: 200px; margin-top: 6px; }
+</style>
+</head>
+<body>
+<h1>Live crypto prices, received over the CAN bus (vcan0)</h1>
+<div class="info" id="status">waiting for data...</div>
+<div class="grid" id="grid"></div>
+
+<script>
+// One color per coin
+const COLORS = ["#f7931a", "#8c8cff", "#14f195", "#25a2e0", "#3cc8c8", "#c2a633"];
+const charts = [];
+
+// Create the 6 cards with an empty chart in each
+function setup(names) {
+  const grid = document.getElementById("grid");
+  names.forEach(function (name, i) {
+    const card = document.createElement("div");
+    card.className = "card";
+    card.innerHTML =
+      '<span class="name">' + name + '</span>' +
+      '<span class="price" id="p' + i + '">...</span>' +
+      '<div class="box"><canvas id="c' + i + '"></canvas></div>';
+    grid.appendChild(card);
+
+    charts.push(new Chart(document.getElementById("c" + i), {
+      type: "line",
+      data: { labels: [], datasets: [{ data: [], borderColor: COLORS[i],
+              borderWidth: 2, pointRadius: 0, tension: 0.2 }] },
+      options: {
+        animation: { duration: 500 },
+        maintainAspectRatio: false,
+        plugins: { legend: { display: false } },
+        scales: {
+          x: { ticks: { color: "#999", maxTicksLimit: 5 }, grid: { color: "#2a2a2a" } },
+          y: { ticks: { color: "#999" }, grid: { color: "#2a2a2a" } }
+        }
+      }
+    }));
+  });
+}
+
+// Ask the device for the latest history, then redraw every chart
+async function refresh() {
+  try {
+    const res = await fetch("/data");
+    const d = await res.json();
+    if (charts.length === 0) setup(d.coins.map(function (c) { return c.name; }));
+
+    d.coins.forEach(function (c, i) {
+      const chart = charts[i];
+      chart.data.labels = c.points.map(function (p) {
+        return new Date(p[0] * 1000).toLocaleTimeString();
+      });
+      chart.data.datasets[0].data = c.points.map(function (p) { return p[1]; });
+      chart.update();
+
+      const last = c.points.length ? c.points[c.points.length - 1][1] : null;
+      document.getElementById("p" + i).textContent =
+        last === null ? "waiting..." : last.toFixed(4) + " USD";
+    });
+    document.getElementById("status").textContent =
+      "updated " + new Date().toLocaleTimeString() + " (refreshes every 2 s)";
+  } catch (e) {
+    document.getElementById("status").textContent = "connection to the device lost...";
+  }
+}
+
+refresh();
+setInterval(refresh, 2000);
+</script>
+</body>
+</html>
