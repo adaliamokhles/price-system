@@ -40,6 +40,20 @@
     100% { box-shadow: 0 0 0 0 rgba(34,197,94,0); }
   }
 
+  /* Gateway badge (heartbeat on CAN 0x0F0) */
+  .gw { display: flex; align-items: center; gap: 8px; padding: 6px 12px; border: 1px solid var(--border);
+        border-radius: 999px; background: var(--panel); color: var(--muted); font-weight: 600; font-size: 12px; letter-spacing: 1px; }
+  .gdot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+  .gw.ok   { color: var(--text); } .gw.ok .gdot   { background: var(--up); }
+  .gw.warn { color: #f59e0b; }     .gw.warn .gdot { background: #f59e0b; }
+  .gw.bad  { color: var(--down); } .gw.bad .gdot  { background: var(--down); }
+
+  /* Stale data: shown when the gateway is offline */
+  .banner { display: none; margin-bottom: 16px; padding: 10px 14px; border-radius: 10px;
+            border: 1px solid rgba(239,68,68,.45); background: rgba(239,68,68,.10); color: #fca5a5; font-size: 13px; font-weight: 600; }
+  body.stale .banner { display: block; }
+  body.stale .card { opacity: .45; filter: grayscale(.7); }
+
   /* Ticker + time window buttons */
   .toolbar { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 18px; }
   .ticker { display: flex; gap: 10px; flex-wrap: wrap; }
@@ -96,6 +110,7 @@
     </div>
     <div class="status">
       <span id="updated">connecting…</span>
+      <div class="gw" id="gw"><div class="gdot"></div><span id="gwText">GATEWAY · ?</span></div>
       <div class="live" id="live"><div class="dot"></div><span id="liveText">LIVE</span></div>
     </div>
   </header>
@@ -109,8 +124,9 @@
     </div>
   </div>
 
+  <div class="banner" id="staleBanner"></div>
   <div class="grid" id="grid"></div>
-  <footer>Data path: Coinbase API → price-fetcher → CAN (IDs 0x100–0x105) → price-web → this page · refreshes every 2 s</footer>
+  <footer>Data path: Coinbase API → price-fetcher → CAN (prices 0x100–0x105, heartbeat 0x0F0) → price-web → this page · refreshes every 2 s</footer>
 </div>
 
 <div class="overlay" id="overlay">
@@ -298,6 +314,36 @@ function draw(d) {
   if (focused >= 0) render(d.coins[focused], bigChart, { price: "mPrice", chg: "mChg", stats: "mStats" });
 }
 
+// Gateway badge + stale warning, from the heartbeat info in /data
+function updateGateway(g) {
+  const el = document.getElementById("gw");
+  const txt = document.getElementById("gwText");
+  const banner = document.getElementById("staleBanner");
+  if (!g || !g.seen) {
+    // No heartbeat received since price-web started
+    el.className = "gw bad";
+    txt.textContent = "GATEWAY · NO SIGNAL";
+    banner.textContent = "Waiting for the gateway heartbeat (CAN 0x0F0)… prices may be stale.";
+    document.body.classList.add("stale");
+  } else if (!g.alive) {
+    // Heartbeats stopped: the gateway (price-fetcher) is dead or frozen
+    const s = Math.round(g.age_s);
+    el.className = "gw bad";
+    txt.textContent = "GATEWAY OFFLINE · " + s + " s";
+    banner.textContent = "⚠ Gateway offline: no heartbeat for " + s + " s. The prices below are STALE.";
+    document.body.classList.add("stale");
+  } else if (g.coins_ok < 6) {
+    // Gateway alive, but some prices could not be fetched
+    el.className = "gw warn";
+    txt.textContent = "GATEWAY DEGRADED · " + g.coins_ok + "/6";
+    document.body.classList.remove("stale");
+  } else {
+    el.className = "gw ok";
+    txt.textContent = "GATEWAY ONLINE · 6/6";
+    document.body.classList.remove("stale");
+  }
+}
+
 // Ask the device for new data every 2 seconds
 async function refresh() {
   const live = document.getElementById("live");
@@ -307,11 +353,14 @@ async function refresh() {
     if (!charts.length) setup(d.coins);
     lastData = d;
     draw(d);
+    updateGateway(d.gateway);
     live.classList.remove("off");
     document.getElementById("liveText").textContent = "LIVE";
     document.getElementById("updated").textContent = "updated " + new Date().toLocaleTimeString();
   } catch (e) {
     live.classList.add("off");
+    document.getElementById("gw").className = "gw";
+    document.getElementById("gwText").textContent = "GATEWAY · ?";
     document.getElementById("liveText").textContent = "OFFLINE";
     document.getElementById("updated").textContent = "connection to the device lost…";
   }
