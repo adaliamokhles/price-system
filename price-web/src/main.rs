@@ -1,30 +1,49 @@
-use std::sync::{Arc, Mutex};                         // shared state + lock
-use std::thread;                                     // second worker
-use std::time::{Instant, SystemTime, UNIX_EPOCH};    // Instant = stopwatch, SystemTime = clock
+use std::io::Cursor;                                  // the type of a text response
+use std::sync::{Arc, Mutex};                          // shared state + lock
+use std::thread;                                      // second worker
+use std::time::{Instant, SystemTime, UNIX_EPOCH};     // Instant = stopwatch, SystemTime = clock
 
 use serde_json::json;
 use socketcan::{CanSocket, EmbeddedFrame, Frame, Socket};
 use tiny_http::{Header, Response, Server, StatusCode};
 
-// Prices: ID 0x100 + position = coin (same protocol as the fetcher)
-const NAMES: [&str; 6] = ["BTC", "ETH", "SOL", "XRP", "ADA", "DOGE"];
-const BASE_ID: u32 = 0x100;
-// Gateway heartbeat: [alive counter, coins OK], sent every second by the fetcher
-const HEARTBEAT_ID: u32 = 0x0F0;
-// No heartbeat for more than 3 seconds = gateway offline
-const HEARTBEAT_TIMEOUT_S: f64 = 3.0;
-// Keep the last 200 prices per coin
-const MAX_POINTS: usize = 200;
+// ---------------- CAN ID map (same as price-fetcher) ----------------
+const HEARTBEAT_ID: u32 = 0x0F0;     // [counter, crypto OK, markets OK]
+const CRYPTO_BASE_ID: u32 = 0x100;   // 0x100..0x105
+const MARKETS_BASE_ID: u32 = 0x200;  // 0x200..0x209
+
+const CRYPTO_NAMES: [&str; 6] = ["BTC", "ETH", "SOL", "XRP", "ADA", "DOGE"];
+const MARKET_NAMES: [&str; 10] = [
+    "EUR/USD", "GBP/USD", "AUD/USD", "NZD/USD", "USD/JPY",
+    "USD/CHF", "USD/CAD", "XAU/USD", "XAG/USD", "BTC/USD",
+];
+const N_MARKETS: usize = 10;
+
+const HEARTBEAT_TIMEOUT_S: f64 = 3.0;  // no heartbeat for > 3 s = gateway offline
+const MAX_POINTS: usize = 200;         // crypto: last 200 prices per coin
+const MAX_CANDLES: usize = 1440;       // markets: 1440 one-minute candles = 24 hours
 
 // The web page, built into the program at compile time
 const PAGE: &str = include_str!("index.html");
 
+// One 1-minute candle: start time of the minute, Open, High, Low, Close
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Candle {
+    t: u64,
+    o: f64,
+    h: f64,
+    l: f64,
+    c: f64,
+}
+
 // Everything the two workers share (protected by a lock)
 struct State {
-    history: Vec<Vec<(u64, f64)>>,   // for each coin: (time in seconds, price)
-    last_hb: Option<Instant>,        // when the last heartbeat arrived (None = never)
-    hb_counter: u8,                  // last heartbeat counter byte
-    hb_coins_ok: u8,                 // last heartbeat "coins OK" byte
+    history: Vec<Vec<(u64, f64)>>,  // crypto: for each coin, (time, price)
+    markets: Vec<Vec<Candle>>,      // markets: for each instrument, its candles
+    last_hb: Option<Instant>,       // when the last heartbeat arrived (None = never)
+    hb_counter: u8,
+    hb_crypto_ok: u8,
+    hb_markets_ok: u8,
 }
 
 // Current time in seconds since 1970
@@ -33,6 +52,44 @@ fn now_secs() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
+}
+
+// 0x200..0x209 -> instrument 0..9, anything else -> None
+fn market_index(id: u32) -> Option<usize> {
+    if id >= MARKETS_BASE_ID && id < MARKETS_BASE_ID + N_MARKETS as u32 {
+        Some((id - MARKETS_BASE_ID) as usize)
+    } else {
+        None
+    }
+}
+
+// Add one price to an instrument's candles:
+// same minute -> update High/Low/Close of the last candle, new minute -> start a new candle
+fn update_candles(candles: &mut Vec<Candle>, t: u64, price: f64) {
+    let minute = t - t % 60;
+    match candles.last_mut() {
+        Some(last) if last.t == minute => {
+            if price > last.h {
+                last.h = price;
+            }
+            if price < last.l {
+                last.l = price;
+            }
+            last.c = price;
+        }
+        _ => {
+            candles.push(Candle { t: minute, o: price, h: price, l: price, c: price });
+            if candles.len() > MAX_CANDLES {
+                candles.remove(0);
+            }
+        }
+    }
+}
+
+// "/candles?i=3" -> Some(3); anything invalid -> None
+fn candles_index(url: &str) -> Option<usize> {
+    let n: usize = url.strip_prefix("/candles?i=")?.parse().ok()?;
+    if n < N_MARKETS { Some(n) } else { None }
 }
 
 // WORKER 1: listen to the CAN bus forever
@@ -48,101 +105,183 @@ fn can_listener(sock: CanSocket, state: Arc<Mutex<State>>) {
         let id = frame.raw_id();
         let data = frame.data();
 
-        // Heartbeat from the gateway: remember WHEN it arrived and its 2 bytes
+        // Heartbeat: [counter, crypto OK, markets OK (3rd byte only on newer fetchers)]
         if id == HEARTBEAT_ID {
             if data.len() >= 2 {
                 let mut st = state.lock().unwrap();
                 st.last_hb = Some(Instant::now());
                 st.hb_counter = data[0];
-                st.hb_coins_ok = data[1];
+                st.hb_crypto_ok = data[1];
+                st.hb_markets_ok = if data.len() >= 3 { data[2] } else { 0 };
             }
             continue;
         }
 
-        // Prices: only IDs 0x100..0x105 with exactly 8 bytes
-        if id < BASE_ID || id > BASE_ID + 5 {
-            continue;
-        }
+        // Every price is 8 bytes (f64, little-endian)
         if data.len() != 8 {
             continue;
         }
         let bytes: [u8; 8] = data.try_into().unwrap();
         let price = f64::from_le_bytes(bytes);
-        let index = (id - BASE_ID) as usize;
 
-        // Lock, add the point, drop the oldest if too many (unlocked at the end of the loop)
-        let mut st = state.lock().unwrap();
-        st.history[index].push((now_secs(), price));
-        if st.history[index].len() > MAX_POINTS {
-            st.history[index].remove(0);
+        // Crypto: 0x100..0x105 -> line chart history
+        if id >= CRYPTO_BASE_ID && id <= CRYPTO_BASE_ID + 5 {
+            let index = (id - CRYPTO_BASE_ID) as usize;
+            let mut st = state.lock().unwrap();
+            st.history[index].push((now_secs(), price));
+            if st.history[index].len() > MAX_POINTS {
+                st.history[index].remove(0);
+            }
+        // Markets: 0x200..0x209 -> candles
+        } else if let Some(index) = market_index(id) {
+            let mut st = state.lock().unwrap();
+            update_candles(&mut st.markets[index], now_secs(), price);
         }
     }
 }
 
-// Everything the web page needs, as JSON:
-// {"coins":[...], "gateway":{"seen":true,"alive":true,"age_s":0.4,"counter":42,"coins_ok":6}}
+// Gateway status, shared by /data and /markets
+fn gateway_json(st: &State) -> serde_json::Value {
+    let age: Option<f64> = st.last_hb.map(|t| t.elapsed().as_secs_f64());
+    let alive = matches!(age, Some(a) if a <= HEARTBEAT_TIMEOUT_S);
+    json!({
+        "seen": st.last_hb.is_some(),
+        "alive": alive,
+        "age_s": age,
+        "counter": st.hb_counter,
+        "coins_ok": st.hb_crypto_ok,
+        "markets_ok": st.hb_markets_ok
+    })
+}
+
+// /data : crypto history + gateway (same as before, plus markets_ok)
 fn data_json(state: &Arc<Mutex<State>>) -> String {
     let st = state.lock().unwrap();
-
     let coins: Vec<serde_json::Value> = (0..6)
         .map(|i| {
             let points: Vec<serde_json::Value> =
                 st.history[i].iter().map(|(t, p)| json!([t, p])).collect();
-            json!({ "name": NAMES[i], "points": points })
+            json!({ "name": CRYPTO_NAMES[i], "points": points })
         })
         .collect();
+    json!({ "coins": coins, "gateway": gateway_json(&st) }).to_string()
+}
 
-    // Seconds since the last heartbeat (None if none received yet -> null in JSON)
-    let age: Option<f64> = st.last_hb.map(|t| t.elapsed().as_secs_f64());
-    // Alive = a heartbeat arrived within the last 3 seconds
-    let alive = matches!(age, Some(a) if a <= HEARTBEAT_TIMEOUT_S);
+// /markets : the 10 instruments with their last price and first price (for % change)
+fn markets_json(state: &Arc<Mutex<State>>) -> String {
+    let st = state.lock().unwrap();
+    let list: Vec<serde_json::Value> = (0..N_MARKETS)
+        .map(|i| {
+            let candles = &st.markets[i];
+            json!({
+                "name": MARKET_NAMES[i],
+                "id": MARKETS_BASE_ID + i as u32,
+                "last": candles.last().map(|k| k.c),
+                "first": candles.first().map(|k| k.o),
+                "candles": candles.len()
+            })
+        })
+        .collect();
+    json!({ "markets": list, "gateway": gateway_json(&st) }).to_string()
+}
 
-    json!({
-        "coins": coins,
-        "gateway": {
-            "seen": st.last_hb.is_some(),
-            "alive": alive,
-            "age_s": age,
-            "counter": st.hb_counter,
-            "coins_ok": st.hb_coins_ok
-        }
-    })
-    .to_string()
+// /candles?i=N : all candles of one instrument as [time, open, high, low, close]
+fn candles_json(state: &Arc<Mutex<State>>, i: usize) -> String {
+    let st = state.lock().unwrap();
+    let candles: Vec<serde_json::Value> = st.markets[i]
+        .iter()
+        .map(|k| json!([k.t, k.o, k.h, k.l, k.c]))
+        .collect();
+    json!({ "name": MARKET_NAMES[i], "candles": candles }).to_string()
+}
+
+// A JSON answer for the browser
+fn json_response(body: String) -> Response<Cursor<Vec<u8>>> {
+    Response::from_string(body)
+        .with_header(Header::from_bytes("Content-Type", "application/json").unwrap())
 }
 
 fn main() {
-    // Open the CAN bus first: a missing vcan0 gives a clear error right away
     let sock = CanSocket::open("vcan0")
         .expect("could not open vcan0 (does it exist and is it up?)");
 
-    // The shared state: empty history, no heartbeat yet
     let state = Arc::new(Mutex::new(State {
         history: vec![Vec::new(); 6],
+        markets: vec![Vec::new(); N_MARKETS],
         last_hb: None,
         hb_counter: 0,
-        hb_coins_ok: 0,
+        hb_crypto_ok: 0,
+        hb_markets_ok: 0,
     }));
 
-    // Start worker 1 (CAN) with its own handle to the same state
     let state_for_can = Arc::clone(&state);
     thread::spawn(move || can_listener(sock, state_for_can));
 
-    // WORKER 2 (this main thread): the web server on port 8080
     let server = Server::http("0.0.0.0:8080")
         .expect("could not start the web server on port 8080");
     println!("price-web started: open http://localhost:8080 in your browser (Ctrl+C to stop)");
 
     for request in server.incoming_requests() {
         let url = request.url().to_string();
-        let response = match url.as_str() {
-            "/" => Response::from_string(PAGE).with_header(
-                Header::from_bytes("Content-Type", "text/html; charset=utf-8").unwrap(),
-            ),
-            "/data" => Response::from_string(data_json(&state)).with_header(
-                Header::from_bytes("Content-Type", "application/json").unwrap(),
-            ),
-            _ => Response::from_string("not found").with_status_code(StatusCode(404)),
+        let response = if url == "/" {
+            Response::from_string(PAGE)
+                .with_header(Header::from_bytes("Content-Type", "text/html; charset=utf-8").unwrap())
+        } else if url == "/data" {
+            json_response(data_json(&state))
+        } else if url == "/markets" {
+            json_response(markets_json(&state))
+        } else if let Some(i) = candles_index(&url) {
+            json_response(candles_json(&state, i))
+        } else {
+            Response::from_string("not found").with_status_code(StatusCode(404))
         };
         let _ = request.respond(response);
+    }
+}
+
+// ---------------- Unit tests (run with: cargo test) ----------------
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn market_ids_map_to_instruments() {
+        assert_eq!(market_index(0x200), Some(0));
+        assert_eq!(market_index(0x209), Some(9));
+        assert_eq!(market_index(0x20A), None); // just past the last instrument
+        assert_eq!(market_index(0x105), None); // a crypto ID
+        assert_eq!(market_index(0x0F0), None); // the heartbeat
+    }
+
+    #[test]
+    fn candles_url_is_parsed_safely() {
+        assert_eq!(candles_index("/candles?i=0"), Some(0));
+        assert_eq!(candles_index("/candles?i=9"), Some(9));
+        assert_eq!(candles_index("/candles?i=10"), None);
+        assert_eq!(candles_index("/candles?i=x"), None);
+        assert_eq!(candles_index("/data"), None);
+    }
+
+    #[test]
+    fn prices_in_the_same_minute_build_one_candle() {
+        let mut v = Vec::new();
+        update_candles(&mut v, 120, 10.0); // 02:00 open 10
+        update_candles(&mut v, 130, 12.0); // new high
+        update_candles(&mut v, 150, 9.0);  // new low
+        update_candles(&mut v, 179, 11.0); // close
+        assert_eq!(v, vec![Candle { t: 120, o: 10.0, h: 12.0, l: 9.0, c: 11.0 }]);
+        update_candles(&mut v, 180, 11.5); // next minute -> new candle
+        assert_eq!(v.len(), 2);
+        assert_eq!(v[1], Candle { t: 180, o: 11.5, h: 11.5, l: 11.5, c: 11.5 });
+    }
+
+    #[test]
+    fn only_24_hours_of_candles_are_kept() {
+        let mut v = Vec::new();
+        for k in 0..(MAX_CANDLES as u64 + 5) {
+            update_candles(&mut v, k * 60, k as f64);
+        }
+        assert_eq!(v.len(), MAX_CANDLES);
+        assert_eq!(v[0].t, 5 * 60); // the 5 oldest were dropped
     }
 }
