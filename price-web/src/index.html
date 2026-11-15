@@ -7,6 +7,8 @@
 <!-- Fonts and Chart.js are downloaded by the browser from the internet -->
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;600&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.js"></script>
+<!-- TradingView Lightweight Charts: candlestick charts for the Markets tab -->
+<script src="https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
 <style>
   :root {
     --bg: #07080c; --panel: rgba(255,255,255,0.035); --border: rgba(255,255,255,0.08);
@@ -52,7 +54,7 @@
   .banner { display: none; margin-bottom: 16px; padding: 10px 14px; border-radius: 10px;
             border: 1px solid rgba(239,68,68,.45); background: rgba(239,68,68,.10); color: #fca5a5; font-size: 13px; font-weight: 600; }
   body.stale .banner { display: block; }
-  body.stale .card { opacity: .45; filter: grayscale(.7); }
+  body.stale .card, body.stale .mchip, body.stale .mpanel { opacity: .45; filter: grayscale(.7); }
 
   /* Ticker + time window buttons */
   .toolbar { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 18px; }
@@ -99,14 +101,50 @@
   .close { background: none; border: 1px solid var(--border); color: var(--text); border-radius: 8px; padding: 6px 12px; cursor: pointer; font: 600 12px Inter, Arial, sans-serif; }
   .bigbox { height: 420px; margin-top: 12px; }
   footer { margin-top: 22px; color: var(--muted); font-size: 12px; text-align: center; }
+  footer a { color: var(--muted); }
+
+  /* Tabs: Crypto Monitor / Markets */
+  .tabs { display: flex; gap: 6px; margin: 0 0 18px; background: var(--panel); border: 1px solid var(--border);
+          border-radius: 12px; padding: 4px; width: fit-content; }
+  .tabs button { background: none; border: 0; color: var(--muted); font: 600 13px Inter, Arial, sans-serif;
+                 padding: 8px 18px; border-radius: 9px; cursor: pointer; }
+  .tabs button.active { background: var(--gold); color: #111; }
+  .view { display: none; }
+  .view.active { display: block; }
+
+  /* Markets tab */
+  .mgrid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; margin-bottom: 16px; }
+  @media (max-width: 1100px) { .mgrid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+  @media (max-width: 700px)  { .mgrid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  .mchip { border: 1px solid var(--border); border-radius: 12px; padding: 10px 12px; cursor: pointer;
+           background: linear-gradient(180deg, rgba(255,255,255,.05), rgba(255,255,255,.015)); transition: border-color .2s; }
+  .mchip:hover { border-color: rgba(214,178,94,.45); }
+  .mchip.active { border-color: var(--gold); box-shadow: 0 0 0 1px var(--gold) inset; }
+  .mchip .mn { font-weight: 600; font-size: 13px; display: flex; justify-content: space-between; }
+  .mchip .mid { color: var(--gold); font-size: 10px; }
+  .mchip .mp { font-size: 16px; font-weight: 600; margin-top: 6px; }
+  .mchip .mc { font-size: 11px; margin-top: 2px; }
+  .up { color: var(--up); } .down { color: var(--down); } .flat { color: var(--muted); }
+  .mpanel { border: 1px solid var(--border); border-radius: 16px; padding: 16px;
+            background: linear-gradient(180deg, rgba(255,255,255,.05), rgba(255,255,255,.015)); }
+  .mhead { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
+  .mtitle { font-size: 18px; font-weight: 700; }
+  .mtitle span { color: var(--muted); font-size: 12px; font-weight: 500; margin-left: 8px; }
+  .ohlc { font-size: 12px; color: var(--muted); }
+  .ohlc b { color: var(--text); font-weight: 500; margin-right: 10px; }
+  .mchart { height: 480px; position: relative; }
+  .mempty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+            color: var(--muted); font-size: 14px; pointer-events: none; }
+  .mnote { color: var(--muted); font-size: 12px; margin-top: 10px; }
+  .mtools { display: flex; gap: 8px; flex-wrap: wrap; }
 </style>
 </head>
 <body>
 <div class="wrap">
   <header>
     <div class="brand">
-      <h1>TLB <span>Infinitum</span> Crypto Monitor</h1>
-      <p>Live crypto prices fetched from the internet, sent over the CAN bus <span class="mono">vcan0</span>, drawn here.</p>
+      <h1 id="pageTitle">TLB <span>Infinitum</span> Crypto Monitor</h1>
+      <p id="pageSub">Live crypto prices fetched from the internet, sent over the CAN bus <span class="mono">vcan0</span>, drawn here.</p>
     </div>
     <div class="status">
       <span id="updated">connecting…</span>
@@ -115,6 +153,15 @@
     </div>
   </header>
 
+  <div class="tabs" id="tabs">
+    <button data-view="crypto" class="active">Crypto Monitor</button>
+    <button data-view="markets">Markets</button>
+  </div>
+
+  <div class="banner" id="staleBanner"></div>
+
+  <!-- ===== CRYPTO VIEW ===== -->
+  <div class="view active" id="view-crypto">
   <div class="toolbar">
     <div class="ticker" id="ticker"></div>
     <div class="range" id="range">
@@ -124,9 +171,39 @@
     </div>
   </div>
 
-  <div class="banner" id="staleBanner"></div>
   <div class="grid" id="grid"></div>
-  <footer>Data path: Coinbase API → price-fetcher → CAN (prices 0x100–0x105, heartbeat 0x0F0) → price-web → this page · refreshes every 2 s</footer>
+  </div>
+
+  <!-- ===== MARKETS VIEW ===== -->
+  <div class="view" id="view-markets">
+    <div class="mgrid" id="mgrid"></div>
+    <div class="mpanel">
+      <div class="mhead">
+        <div class="mtitle" id="mtitle">–<span id="msub"></span></div>
+        <div class="mtools">
+          <div class="range" id="mode">
+            <button data-mode="auto" class="active">Auto</button>
+            <button data-mode="line">Line</button>
+            <button data-mode="candles">Candles</button>
+          </div>
+          <div class="range" id="tf">
+            <button data-tf="1">1m</button>
+            <button data-tf="5" class="active">5m</button>
+            <button data-tf="15">15m</button>
+            <button data-tf="60">1h</button>
+          </div>
+        </div>
+      </div>
+      <div class="ohlc" id="ohlc">–</div>
+      <div class="mchart" id="mchart"><div class="mempty" id="mempty">Waiting for candles…</div></div>
+      <div class="mnote">One price every 20 s, grouped into candles. Scroll to zoom, drag to move in time.
+        In Auto mode the chart shows a line when zoomed out and candles when zoomed in.
+        Forex and metals markets close on weekends (candles go flat); BTC trades 24/7.</div>
+    </div>
+  </div>
+
+  <footer>Data path: Coinbase API + xaus.com → price-fetcher → CAN (crypto 0x100–0x105, markets 0x200–0x209, heartbeat 0x0F0) → price-web → this page.
+    <br>Candlestick charts by <a href="https://www.tradingview.com" target="_blank" rel="noopener">TradingView</a> Lightweight Charts™.</footer>
 </div>
 
 <div class="overlay" id="overlay">
@@ -332,14 +409,12 @@ function updateGateway(g) {
     txt.textContent = "GATEWAY OFFLINE · " + s + " s";
     banner.textContent = "⚠ Gateway offline: no heartbeat for " + s + " s. The prices below are STALE.";
     document.body.classList.add("stale");
-  } else if (g.coins_ok < 6) {
-    // Gateway alive, but some prices could not be fetched
-    el.className = "gw warn";
-    txt.textContent = "GATEWAY DEGRADED · " + g.coins_ok + "/6";
-    document.body.classList.remove("stale");
   } else {
-    el.className = "gw ok";
-    txt.textContent = "GATEWAY ONLINE · 6/6";
+    // Gateway alive: all good, or some prices could not be fetched (degraded)
+    const m = (g.markets_ok === undefined) ? 10 : g.markets_ok;
+    const ok = g.coins_ok >= 6 && m >= 10;
+    el.className = ok ? "gw ok" : "gw warn";
+    txt.textContent = (ok ? "GATEWAY ONLINE · " : "GATEWAY DEGRADED · ") + g.coins_ok + "/6 · " + m + "/10";
     document.body.classList.remove("stale");
   }
 }
@@ -365,6 +440,228 @@ async function refresh() {
     document.getElementById("updated").textContent = "connection to the device lost…";
   }
 }
+
+// ======================= MARKETS TAB =======================
+// Same order as price-fetcher / price-web: position = CAN ID 0x200 + position
+// Decimals that suit each instrument (forex 5, yen 3, gold 2, silver 3, BTC 2)
+const MARKET_DECIMALS = [5, 5, 5, 5, 3, 5, 5, 2, 3, 2];
+let currentView = "crypto";
+let selected = 7;          // instrument shown in the chart (7 = gold)
+let timeframe = 5;         // candle size in minutes
+let mChart = null, mSeries = null;   // mSeries = the candles
+let lSeries = null;        // the line (close prices), shown when zoomed out
+let chartMode = "auto";    // "auto", "line" or "candles"
+let showingLine = false;   // what Auto mode currently shows
+let barByTime = new Map(); // time -> bar, to show O/H/L/C under the mouse
+let shownKey = "";         // which instrument+timeframe the chart currently shows
+let shownBars = [];        // the bars currently in the chart
+let marketsList = null;
+
+// Local time offset in seconds (the chart library shows UTC, so we shift times to local)
+const TZ_SHIFT = -new Date().getTimezoneOffset() * 60;
+
+function mfmt(i, v) {
+  const d = MARKET_DECIMALS[i];
+  return v.toLocaleString("en-US", { minimumFractionDigits: d, maximumFractionDigits: d });
+}
+
+// Page title follows the tab
+function setTitle(view) {
+  const markets = view === "markets";
+  const name = markets ? "Trading View" : "Crypto Monitor";
+  document.getElementById("pageTitle").innerHTML = "TLB <span>Infinitum</span> " + name;
+  document.getElementById("pageSub").innerHTML = markets
+    ? "Live forex, gold, silver and BTC prices, sent over the CAN bus <span class=\"mono\">vcan0</span>, drawn as candles."
+    : "Live crypto prices fetched from the internet, sent over the CAN bus <span class=\"mono\">vcan0</span>, drawn here.";
+  document.title = "TLB Infinitum " + name;
+}
+
+// Tabs: show one view, hide the other
+document.querySelectorAll("#tabs button").forEach(function (b) {
+  b.addEventListener("click", function () {
+    document.querySelectorAll("#tabs button").forEach(function (x) { x.classList.remove("active"); });
+    b.classList.add("active");
+    currentView = b.dataset.view;
+    setTitle(currentView);
+    document.getElementById("view-crypto").classList.toggle("active", currentView === "crypto");
+    document.getElementById("view-markets").classList.toggle("active", currentView === "markets");
+    if (currentView === "markets") { ensureChart(); refreshMarkets(); }
+  });
+});
+
+// Timeframe buttons
+document.querySelectorAll("#tf button").forEach(function (b) {
+  b.addEventListener("click", function () {
+    document.querySelectorAll("#tf button").forEach(function (x) { x.classList.remove("active"); });
+    b.classList.add("active");
+    timeframe = parseInt(b.dataset.tf, 10);
+    refreshMarkets();
+  });
+});
+
+// Create the candlestick chart once (only when the Markets tab is first opened)
+function ensureChart() {
+  if (mChart) return;
+  mChart = LightweightCharts.createChart(document.getElementById("mchart"), {
+    autoSize: true,
+    layout: { background: { type: "solid", color: "transparent" }, textColor: "#8b90a0" },
+    grid: { vertLines: { color: "rgba(255,255,255,0.04)" }, horzLines: { color: "rgba(255,255,255,0.05)" } },
+    rightPriceScale: { borderColor: "rgba(255,255,255,0.08)" },
+    timeScale: { borderColor: "rgba(255,255,255,0.08)", timeVisible: true, secondsVisible: false }
+  });
+  mSeries = mChart.addCandlestickSeries({
+    upColor: "#22c55e", downColor: "#ef4444", borderVisible: false,
+    wickUpColor: "#22c55e", wickDownColor: "#ef4444"
+  });
+  // Same data drawn as a line of the close prices, with a soft gold fill under it
+  lSeries = mChart.addAreaSeries({
+    lineColor: "#d6b25e", lineWidth: 2,
+    topColor: "rgba(214,178,94,0.28)", bottomColor: "rgba(214,178,94,0.0)",
+    visible: false
+  });
+  // Show Open/High/Low/Close of the candle under the mouse (works for both views)
+  mChart.subscribeCrosshairMove(function (param) {
+    const bar = param && param.time !== undefined ? barByTime.get(param.time) : null;
+    showOhlc(bar || shownBars[shownBars.length - 1]);
+  });
+  // Every zoom or scroll: check how many bars are on screen
+  mChart.timeScale().subscribeVisibleLogicalRangeChange(applyMode);
+}
+
+// Decide line or candles.
+// Auto: more than 100 bars on screen = zoomed out = line; fewer than 70 = candles.
+// (Between 70 and 100 it keeps what it shows, so it doesn't flicker at the border.)
+function applyMode() {
+  let line;
+  if (chartMode === "line") line = true;
+  else if (chartMode === "candles") line = false;
+  else {
+    const r = mChart.timeScale().getVisibleLogicalRange();
+    const onScreen = r ? r.to - r.from : 0;
+    if (onScreen > 100) showingLine = true;
+    else if (onScreen < 70) showingLine = false;
+    line = showingLine;
+  }
+  lSeries.applyOptions({ visible: line });
+  mSeries.applyOptions({ visible: !line });
+}
+
+// Auto / Line / Candles buttons
+document.querySelectorAll("#mode button").forEach(function (b) {
+  b.addEventListener("click", function () {
+    document.querySelectorAll("#mode button").forEach(function (x) { x.classList.remove("active"); });
+    b.classList.add("active");
+    chartMode = b.dataset.mode;
+    if (mChart) applyMode();
+  });
+});
+
+// A candle turned into a line point: only the close price
+function toPoint(b) { return { time: b.time, value: b.close }; }
+
+function showOhlc(b) {
+  const el = document.getElementById("ohlc");
+  if (!b) { el.textContent = "–"; return; }
+  el.innerHTML = "O <b class=\"mono\">" + mfmt(selected, b.open) + "</b>H <b class=\"mono\">" + mfmt(selected, b.high) +
+    "</b>L <b class=\"mono\">" + mfmt(selected, b.low) + "</b>C <b class=\"mono\">" + mfmt(selected, b.close) + "</b>";
+}
+
+// Group 1-minute candles [t, o, h, l, c] into bigger candles of "tf" minutes
+function aggregate(candles, tf) {
+  const size = tf * 60;
+  const bars = [];
+  candles.forEach(function (k) {
+    const t = Math.floor(k[0] / size) * size + TZ_SHIFT;
+    const last = bars[bars.length - 1];
+    if (last && last.time === t) {
+      last.high = Math.max(last.high, k[2]);
+      last.low = Math.min(last.low, k[3]);
+      last.close = k[4];
+    } else {
+      bars.push({ time: t, open: k[1], high: k[2], low: k[3], close: k[4] });
+    }
+  });
+  return bars;
+}
+
+// The 10 instrument buttons (built once)
+function setupMarkets(list) {
+  const g = document.getElementById("mgrid");
+  list.forEach(function (m, i) {
+    const d = document.createElement("div");
+    d.className = "mchip" + (i === selected ? " active" : "");
+    d.innerHTML = '<div class="mn">' + m.name + '<span class="mid mono">0x' + m.id.toString(16).toUpperCase() + '</span></div>' +
+      '<div class="mp mono" id="mp' + i + '">–</div><div class="mc mono flat" id="mc' + i + '">–</div>';
+    d.addEventListener("click", function () {
+      selected = i;
+      document.querySelectorAll(".mchip").forEach(function (x, j) { x.classList.toggle("active", j === i); });
+      refreshMarkets();
+    });
+    g.appendChild(d);
+  });
+}
+
+// Update the 10 buttons: last price + % change since the first candle kept
+function drawMarketList(list) {
+  list.forEach(function (m, i) {
+    const p = document.getElementById("mp" + i), c = document.getElementById("mc" + i);
+    if (m.last === null) { p.textContent = "waiting…"; c.textContent = "–"; c.className = "mc mono flat"; return; }
+    p.textContent = mfmt(i, m.last);
+    const pct = m.first ? (m.last - m.first) / m.first * 100 : 0;
+    const cls = pct > 0.0001 ? "up" : pct < -0.0001 ? "down" : "flat";
+    c.className = "mc mono " + cls;
+    c.textContent = (cls === "up" ? "▲ +" : cls === "down" ? "▼ " : "") + pct.toFixed(3) + " %";
+  });
+  const m = list[selected];
+  document.getElementById("mtitle").firstChild.textContent = m.name;
+  document.getElementById("msub").textContent = "CAN 0x" + m.id.toString(16).toUpperCase() + " · " + timeframe + "-minute candles";
+}
+
+// Load the candles of the selected instrument and draw them
+async function refreshMarkets() {
+  if (currentView !== "markets") return;
+  try {
+    const r1 = await fetch("/markets");
+    const d1 = await r1.json();
+    if (!marketsList) setupMarkets(d1.markets);
+    marketsList = d1.markets;
+    drawMarketList(d1.markets);
+    updateGateway(d1.gateway);
+
+    const r2 = await fetch("/candles?i=" + selected);
+    const d2 = await r2.json();
+    const bars = aggregate(d2.candles, timeframe);
+    document.getElementById("mempty").style.display = bars.length ? "none" : "flex";
+    const pf = { priceFormat: { type: "price", precision: MARKET_DECIMALS[selected],
+                                minMove: Math.pow(10, -MARKET_DECIMALS[selected]) } };
+    mSeries.applyOptions(pf);
+    lSeries.applyOptions(pf);
+
+    const key = selected + "/" + timeframe;
+    if (key !== shownKey) {
+      // New instrument or timeframe: load everything and fit it on screen
+      mSeries.setData(bars);
+      lSeries.setData(bars.map(toPoint));
+      mChart.timeScale().fitContent();
+      shownKey = key;
+    } else {
+      // Same chart: only update the last candle and add new ones (keeps your zoom)
+      const from = Math.max(shownBars.length - 1, 0);
+      for (let k = from; k < bars.length; k++) {
+        mSeries.update(bars[k]);
+        lSeries.update(toPoint(bars[k]));
+      }
+    }
+    shownBars = bars;
+    barByTime = new Map(bars.map(function (b) { return [b.time, b]; }));
+    applyMode();
+    showOhlc(bars[bars.length - 1]);
+  } catch (e) {
+    // The crypto refresh already shows OFFLINE when the device is unreachable
+  }
+}
+setInterval(refreshMarkets, 5000);
+
 refresh();
 setInterval(refresh, 2000);
 </script>
