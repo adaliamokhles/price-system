@@ -102,15 +102,25 @@ Low IDs win arbitration on a real CAN bus, so the heartbeat is given the lowest 
 ## Running it anywhere: one command
 
 ```bash
+git clone https://github.com/adaliamokhles/price-system.git
+cd price-system
 ./run-demo.sh
 ```
 
 Builds both programs, starts them, and opens the dashboard at
-<http://localhost:8080>. Works on **macOS, Linux and Windows (WSL)**, needs only
-[Rust](https://rustup.rs), and asks for no root rights.
+<http://localhost:8080>. Stop it with Ctrl+C.
 
-It runs the system over its **UDP transport** instead of CAN — see
-[Two transports](#two-transports) below.
+**The same three commands on every machine** — macOS (Apple silicon or Intel),
+Linux, or Windows through WSL. Nothing to choose and nothing to configure: Cargo
+compiles for whatever processor it finds, and the script only checks the operating
+system to decide how to open your browser.
+
+The only requirement is [Rust](https://rustup.rs) (install with `rustup`, which
+also gives you `cargo`). No root rights, no CAN bus, no Yocto.
+
+This route runs the system over its **UDP transport** instead of CAN — see
+[Two transports](#two-transports) below. The dashboard tells you which one it is
+using.
 
 ## Running it on Linux the way the device does
 
