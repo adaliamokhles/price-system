@@ -4,4 +4,12 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+
+# CAN is a Linux kernel feature, so this crate is only pulled in on Linux.
+# On macOS or Windows it is never downloaded and never compiled.
+[target.'cfg(target_os = "linux")'.dependencies]
 socketcan = "3"
+
+[features]
+# Build without CAN even on Linux, to test the portable path: cargo run --features udp-only
+udp-only = []

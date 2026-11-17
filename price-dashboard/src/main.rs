@@ -1,14 +1,14 @@
-// socketcan: CanSocket = bus connection, Socket = gives read_frame(),
-// Frame = gives raw_id(), EmbeddedFrame = gives data()
-use socketcan::{CanSocket, EmbeddedFrame, Frame, Socket};
+mod bus;                               // the bus: CAN on Linux, UDP elsewhere
+use bus::Bus;
 
 // Same order as the fetcher: position 0 = ID 0x100 = BTC, ... position 5 = ID 0x105 = DOGE
 const NAMES: [&str; 6] = ["BTC", "ETH", "SOL", "XRP", "ADA", "DOGE"];
 const BASE_ID: u32 = 0x100;
 
 fn main() {
-    // Open the CAN bus (stop with a clear message if it doesn't exist)
-    let sock = CanSocket::open("vcan0").expect("could not open vcan0 (does it exist and is it up?)");
+    // Open the bus: CAN on Linux, UDP with --udp or on a machine without CAN
+    let sock = Bus::open_receiver(bus::udp_requested())
+        .expect("could not open the bus (on Linux: does vcan0 exist and is it up?)");
 
     // Latest price of each coin. None = nothing received yet.
     let mut prices: [Option<f64>; 6] = [None; 6];
@@ -17,12 +17,12 @@ fn main() {
     // How many price frames we've received in total
     let mut count: u64 = 0;
 
-    println!("price-dashboard: waiting for prices on vcan0... (Ctrl+C to stop)");
+    println!("price-dashboard: waiting for prices on {}... (Ctrl+C to stop)", sock.name());
 
     loop {
-        // 1. Wait for the next CAN frame on the bus
-        let frame = match sock.read_frame() {
-            Ok(f) => f,
+        // 1. Wait for the next message on the bus
+        let (id, data) = match sock.recv() {
+            Ok(message) => message,
             Err(e) => {
                 eprintln!("read error: {}", e);
                 continue; // skip and wait for the next one
@@ -30,13 +30,11 @@ fn main() {
         };
 
         // 2. Keep only our price IDs (0x100 to 0x105)
-        let id = frame.raw_id();
         if id < BASE_ID || id > BASE_ID + 5 {
             continue;
         }
 
         // 3. A price must be exactly 8 bytes
-        let data = frame.data();
         if data.len() != 8 {
             continue;
         }

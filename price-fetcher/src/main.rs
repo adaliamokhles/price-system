@@ -2,7 +2,8 @@ use std::sync::{Arc, Mutex};                 // shared "OK counts" between the w
 use std::thread::{self, sleep};              // thread = extra worker, sleep = wait
 use std::time::Duration;
 
-use socketcan::{CanFrame, CanSocket, EmbeddedFrame, Socket, StandardId};
+mod bus;                                     // the bus: CAN on Linux, UDP elsewhere
+use bus::Bus;
 
 // ---------------- CAN ID map ----------------
 // 0x0F0          gateway heartbeat  [counter, crypto OK 0..6, markets OK 0..10]
@@ -86,28 +87,21 @@ fn rate_to_quote(rate: f64, invert: bool) -> Option<f64> {
     }
 }
 
-// Send one price on the CAN bus: 8 bytes (f64, little-endian)
-fn send_price(sock: &CanSocket, id: u16, price: f64) -> Result<(), Box<dyn std::error::Error>> {
-    let data = price.to_le_bytes();
-    let can_id = StandardId::new(id).ok_or("invalid CAN ID")?;
-    let frame = CanFrame::new(can_id, &data).ok_or("could not build CAN frame")?;
-    sock.write_frame(&frame)?;
+// Send one price on the bus: 8 bytes (f64, little-endian)
+fn send_price(sock: &Bus, id: u16, price: f64) -> Result<(), Box<dyn std::error::Error>> {
+    sock.send(id, &price.to_le_bytes())?;
     Ok(())
 }
 
 // WORKER 2: heartbeat every second: [counter, crypto OK, markets OK]
-fn heartbeat_loop(sock: CanSocket, crypto_ok: Arc<Mutex<u8>>, markets_ok: Arc<Mutex<u8>>) {
+fn heartbeat_loop(sock: Bus, crypto_ok: Arc<Mutex<u8>>, markets_ok: Arc<Mutex<u8>>) {
     let mut counter: u8 = 0;
     loop {
         let c = *crypto_ok.lock().unwrap();
         let m = *markets_ok.lock().unwrap();
         let data = [counter, c, m];
-        if let Some(id) = StandardId::new(HEARTBEAT_ID) {
-            if let Some(frame) = CanFrame::new(id, &data) {
-                if let Err(e) = sock.write_frame(&frame) {
-                    eprintln!("heartbeat CAN error: {}", e);
-                }
-            }
+        if let Err(e) = sock.send(HEARTBEAT_ID, &data) {
+            eprintln!("heartbeat bus error: {}", e);
         }
         counter = counter.wrapping_add(1);
         sleep(Duration::from_secs(1));
@@ -115,7 +109,7 @@ fn heartbeat_loop(sock: CanSocket, crypto_ok: Arc<Mutex<u8>>, markets_ok: Arc<Mu
 }
 
 // One markets round: 2 downloads -> 10 prices -> CAN. Returns how many were sent OK.
-fn markets_round(sock: &CanSocket) -> u8 {
+fn markets_round(sock: &Bus) -> u8 {
     let rates = fetch_json(COINBASE_RATES_URL);
     let metals = fetch_json(XAUS_SPOT_URL);
     if let Err(e) = &rates {
@@ -159,7 +153,7 @@ fn markets_round(sock: &CanSocket) -> u8 {
 }
 
 // WORKER 3: markets every 20 seconds, forever
-fn markets_loop(sock: CanSocket, markets_ok: Arc<Mutex<u8>>) {
+fn markets_loop(sock: Bus, markets_ok: Arc<Mutex<u8>>) {
     loop {
         let ok = markets_round(&sock);
         *markets_ok.lock().unwrap() = ok;
@@ -169,10 +163,17 @@ fn markets_loop(sock: CanSocket, markets_ok: Arc<Mutex<u8>>) {
 }
 
 fn main() {
-    // One CAN connection per worker
-    let sock = CanSocket::open("vcan0").expect("could not open vcan0 (does it exist and is it up?)");
-    let hb_sock = CanSocket::open("vcan0").expect("could not open vcan0 for the heartbeat");
-    let mk_sock = CanSocket::open("vcan0").expect("could not open vcan0 for the markets");
+    // One bus connection per worker. On Linux this is CAN on vcan0; with --udp,
+    // or on a machine without CAN, it is UDP on 127.0.0.1 instead.
+    let udp = bus::udp_requested();
+    let open = |what: &str| {
+        Bus::open_sender(udp)
+            .unwrap_or_else(|e| panic!("could not open the bus for {}: {} (on Linux: does vcan0 exist and is it up?)", what, e))
+    };
+    let sock = open("crypto");
+    let hb_sock = open("the heartbeat");
+    let mk_sock = open("the markets");
+    println!("price-fetcher: sending over {}", sock.name());
 
     // Shared OK counts (0 until the first round of each group is done)
     let crypto_ok = Arc::new(Mutex::new(0u8));
@@ -201,7 +202,7 @@ fn main() {
                         ok_count += 1;
                         println!("sent  0x{:03X}  {:<8} = {:.4}", id, coin, price);
                     }
-                    Err(e) => println!("CAN error for {}: {}", coin, e),
+                    Err(e) => println!("bus error for {}: {}", coin, e),
                 },
                 Err(e) => println!("fetch error for {}: {}", coin, e),
             }

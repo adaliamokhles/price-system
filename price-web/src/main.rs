@@ -4,7 +4,8 @@ use std::thread;                                      // second worker
 use std::time::{Instant, SystemTime, UNIX_EPOCH};     // Instant = stopwatch, SystemTime = clock
 
 use serde_json::json;
-use socketcan::{CanSocket, EmbeddedFrame, Frame, Socket};
+mod bus;                               // the bus: CAN on Linux, UDP elsewhere
+use bus::Bus;
 use tiny_http::{Header, Response, Server, StatusCode};
 
 // ---------------- CAN ID map (same as price-fetcher) ----------------
@@ -44,6 +45,7 @@ struct State {
     hb_counter: u8,
     hb_crypto_ok: u8,
     hb_markets_ok: u8,
+    transport: String,              // "CAN bus vcan0" or "UDP 127.0.0.1:29540"
 }
 
 // Current time in seconds since 1970
@@ -92,18 +94,17 @@ fn candles_index(url: &str) -> Option<usize> {
     if n < N_MARKETS { Some(n) } else { None }
 }
 
-// WORKER 1: listen to the CAN bus forever
-fn can_listener(sock: CanSocket, state: Arc<Mutex<State>>) {
+// WORKER 1: listen to the bus forever
+fn bus_listener(sock: Bus, state: Arc<Mutex<State>>) {
     loop {
-        let frame = match sock.read_frame() {
-            Ok(f) => f,
+        let (id, data) = match sock.recv() {
+            Ok(message) => message,
             Err(e) => {
-                eprintln!("CAN read error: {}", e);
+                eprintln!("bus read error: {}", e);
                 continue;
             }
         };
-        let id = frame.raw_id();
-        let data = frame.data();
+        let data = &data[..];
 
         // Heartbeat: [counter, crypto OK, markets OK (3rd byte only on newer fetchers)]
         if id == HEARTBEAT_ID {
@@ -150,7 +151,8 @@ fn gateway_json(st: &State) -> serde_json::Value {
         "age_s": age,
         "counter": st.hb_counter,
         "coins_ok": st.hb_crypto_ok,
-        "markets_ok": st.hb_markets_ok
+        "markets_ok": st.hb_markets_ok,
+        "transport": st.transport
     })
 }
 
@@ -202,8 +204,11 @@ fn json_response(body: String) -> Response<Cursor<Vec<u8>>> {
 }
 
 fn main() {
-    let sock = CanSocket::open("vcan0")
-        .expect("could not open vcan0 (does it exist and is it up?)");
+    // On Linux this listens on CAN (vcan0); with --udp, or on a machine without
+    // CAN, it listens for UDP messages on 127.0.0.1 instead.
+    let sock = Bus::open_receiver(bus::udp_requested())
+        .expect("could not open the bus (on Linux: does vcan0 exist and is it up?)");
+    println!("price-web: listening on {}", sock.name());
 
     let state = Arc::new(Mutex::new(State {
         history: vec![Vec::new(); 6],
@@ -212,10 +217,11 @@ fn main() {
         hb_counter: 0,
         hb_crypto_ok: 0,
         hb_markets_ok: 0,
+        transport: sock.name(),     // so the page can say what it is really using
     }));
 
-    let state_for_can = Arc::clone(&state);
-    thread::spawn(move || can_listener(sock, state_for_can));
+    let state_for_bus = Arc::clone(&state);
+    thread::spawn(move || bus_listener(sock, state_for_bus));
 
     let server = Server::http("0.0.0.0:8080")
         .expect("could not start the web server on port 8080");
