@@ -99,10 +99,23 @@ Low IDs win arbitration on a real CAN bus, so the heartbeat is given the lowest 
 
 ---
 
-## Running it on a normal Linux PC
+## Running it anywhere: one command
 
-Needs Rust (edition 2024) and a Linux kernel with SocketCAN. Not macOS or Windows —
-SocketCAN is a Linux kernel feature. On Windows, WSL2 works.
+```bash
+./run-demo.sh
+```
+
+Builds both programs, starts them, and opens the dashboard at
+<http://localhost:8080>. Works on **macOS, Linux and Windows (WSL)**, needs only
+[Rust](https://rustup.rs), and asks for no root rights.
+
+It runs the system over its **UDP transport** instead of CAN — see
+[Two transports](#two-transports) below.
+
+## Running it on Linux the way the device does
+
+With a real (virtual) CAN bus. Needs Rust (edition 2024) and a Linux kernel with
+SocketCAN.
 
 **1. Create the virtual CAN bus** (once per boot):
 
@@ -130,13 +143,47 @@ For the terminal view instead, run `cd price-dashboard && cargo run`.
 
 Watch the raw bus traffic with `candump vcan0` (from `can-utils`).
 
+## Two transports
+
+CAN lives inside the Linux kernel, so it does not exist on macOS or Windows. To keep
+the project runnable everywhere, the bus is one small layer (`src/bus.rs`, shared by
+the three programs) with two implementations behind it:
+
+| Transport | Used on | Chosen by |
+|---|---|---|
+| **CAN** on `vcan0` | Linux, and the device itself | the default |
+| **UDP** on `127.0.0.1:29540` | macOS, Windows, or Linux on request | `--udp`, or automatically where CAN does not exist |
+
+The programs stay separate processes talking over a socket, and the messages keep their
+format: a UDP message is the CAN frame written out by hand, `[ID high][ID low][up to 8 data bytes]`.
+
+On Linux the CAN code is compiled in and `--udp` is optional, which is useful for trying
+the portable path:
+
+```bash
+cargo run -- --udp            # same thing, over UDP
+```
+
+On macOS the `socketcan` crate is never even downloaded: it is declared only for Linux
+targets, and the CAN code is removed before compilation.
+
+```toml
+[target.'cfg(target_os = "linux")'.dependencies]
+socketcan = "3"
+```
+
+One limitation of the UDP transport: only **one** receiver can listen at a time, since a
+UDP port belongs to a single program. On a real CAN bus every receiver hears everything,
+so `price-web` and `price-dashboard` can run side by side there.
+
 ### Tests
 
 ```bash
 cd price-web && cargo test
 ```
 
-Covers the CAN ID mapping, URL parsing, candle building and the 24-hour cap.
+Covers the CAN ID mapping, URL parsing, candle building, the 24-hour cap, and the bus
+layer — including two programs actually exchanging messages over UDP.
 
 ---
 

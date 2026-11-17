@@ -5,5 +5,13 @@ edition = "2024"
 
 [dependencies]
 serde_json = "1.0.154"
-socketcan = "3"
 tiny_http = "0.12"
+
+# CAN is a Linux kernel feature, so this crate is only pulled in on Linux.
+# On macOS or Windows it is never downloaded and never compiled.
+[target.'cfg(target_os = "linux")'.dependencies]
+socketcan = "3"
+
+[features]
+# Build without CAN even on Linux, to test the portable path: cargo run --features udp-only
+udp-only = []

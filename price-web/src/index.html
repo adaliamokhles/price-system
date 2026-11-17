@@ -144,7 +144,7 @@
   <header>
     <div class="brand">
       <h1 id="pageTitle">TLB <span>Infinitum</span> Crypto Monitor</h1>
-      <p id="pageSub">Live crypto prices fetched from the internet, sent over the CAN bus <span class="mono">vcan0</span>, drawn here.</p>
+      <p id="pageSub">Live crypto prices fetched from the internet, sent over the bus, drawn here.</p>
     </div>
     <div class="status">
       <span id="updated">connecting…</span>
@@ -202,7 +202,9 @@
     </div>
   </div>
 
-  <footer>Data path: Coinbase API + xaus.com → price-fetcher → CAN (crypto 0x100–0x105, markets 0x200–0x209, heartbeat 0x0F0) → price-web → this page.
+  <footer>Data path: Coinbase API + xaus.com → price-fetcher → <span class="mono" id="busFoot">bus</span>
+    (crypto 0x100–0x105, markets 0x200–0x209, heartbeat 0x0F0) → price-web → this page.
+    <span id="busNote"></span>
     <br>Candlestick charts by <a href="https://www.tradingview.com" target="_blank" rel="noopener">TradingView</a> Lightweight Charts™.</footer>
 </div>
 
@@ -393,6 +395,7 @@ function draw(d) {
 
 // Gateway badge + stale warning, from the heartbeat info in /data
 function updateGateway(g) {
+  if (g) setBus(g.transport);          // the server says which bus it is really on
   const el = document.getElementById("gw");
   const txt = document.getElementById("gwText");
   const banner = document.getElementById("staleBanner");
@@ -400,7 +403,7 @@ function updateGateway(g) {
     // No heartbeat received since price-web started
     el.className = "gw bad";
     txt.textContent = "GATEWAY · NO SIGNAL";
-    banner.textContent = "Waiting for the gateway heartbeat (CAN 0x0F0)… prices may be stale.";
+    banner.textContent = "Waiting for the gateway heartbeat (ID 0x0F0)… prices may be stale.";
     document.body.classList.add("stale");
   } else if (!g.alive) {
     // Heartbeats stopped: the gateway (price-fetcher) is dead or frozen
@@ -465,14 +468,32 @@ function mfmt(i, v) {
   return v.toLocaleString("en-US", { minimumFractionDigits: d, maximumFractionDigits: d });
 }
 
+// Which bus the server is really using. The server tells us on every refresh;
+// until the first answer arrives we say nothing specific.
+let busName = "the bus";
+
+// Put the real transport into the subtitle and the footer. On a machine with no
+// CAN bus the messages travel over UDP instead, and the page must say so rather
+// than claim a CAN bus that is not there.
+function setBus(name) {
+  if (!name || name === busName) return;
+  busName = name;
+  document.getElementById("busFoot").textContent = name;
+  document.getElementById("busNote").textContent = name.startsWith("UDP")
+    ? "This machine has no CAN bus, so the same messages travel over UDP instead."
+    : "";
+  setTitle(currentView);
+}
+
 // Page title follows the tab
 function setTitle(view) {
   const markets = view === "markets";
   const name = markets ? "Trading View" : "Crypto Monitor";
   document.getElementById("pageTitle").innerHTML = "TLB <span>Infinitum</span> " + name;
+  const over = " sent over <span class=\"mono\">" + busName + "</span>, ";
   document.getElementById("pageSub").innerHTML = markets
-    ? "Live forex, gold, silver and BTC prices, sent over the CAN bus <span class=\"mono\">vcan0</span>, drawn as candles."
-    : "Live crypto prices fetched from the internet, sent over the CAN bus <span class=\"mono\">vcan0</span>, drawn here.";
+    ? "Live forex, gold, silver and BTC prices," + over + "drawn as candles."
+    : "Live crypto prices fetched from the internet," + over + "drawn here.";
   document.title = "TLB Infinitum " + name;
 }
 
