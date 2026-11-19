@@ -7,7 +7,17 @@ CAN bus; the others read that bus and show the prices, in a terminal and in a br
 
 This repository holds **only the source code**. The embedded Linux image that runs it is
 built from the Yocto layer in
-[meta-mokhles](https://github.com/adaliamokhles/meta-mokhles).
+[meta-mokhles](https://github.com/adaliamokhles/meta-mokhles) — where the whole
+distribution can be rebuilt and started with a handful of commands.
+
+---
+
+## Watch it run
+
+The device booting in QEMU, starting the programs by itself, and serving the dashboard —
+no login, nothing started by hand.
+
+https://github.com/user-attachments/assets/56463c65-6167-4f81-9ba5-884e9edbc100
 
 ---
 
