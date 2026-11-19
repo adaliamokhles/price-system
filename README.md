@@ -128,6 +128,48 @@ system to decide how to open your browser.
 The only requirement is [Rust](https://rustup.rs) (install with `rustup`, which
 also gives you `cargo`). No root rights, no CAN bus, no Yocto.
 
+<details>
+<summary><b>Never used a terminal before? Start here.</b></summary>
+
+**On Windows**, you need WSL, which gives you Ubuntu inside Windows. Open PowerShell as
+administrator and run:
+
+```powershell
+wsl --install
+```
+
+Restart the computer, then open **Ubuntu** from the Start menu. It asks you to pick a
+username and password the first time. Everything below happens in that window.
+
+**On macOS**, open the Terminal app instead and skip straight to installing Rust.
+
+**Install the tools** (the first line is only needed on Ubuntu/WSL):
+
+```bash
+sudo apt update && sudo apt install -y git curl build-essential
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```
+
+Press Enter to accept the default when the Rust installer asks. Then load it into the
+current window:
+
+```bash
+source "$HOME/.cargo/env"
+```
+
+**Run the project:**
+
+```bash
+git clone https://github.com/adaliamokhles/price-system.git
+cd price-system
+./run-demo.sh
+```
+
+The first build takes a few minutes. When it finishes, your browser opens on the
+dashboard. Press Ctrl+C in the terminal to stop it.
+
+</details>
+
 This route runs the system over its **UDP transport** instead of CAN — see
 [Two transports](#two-transports) below. The dashboard tells you which one it is
 using.
